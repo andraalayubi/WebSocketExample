@@ -8,7 +8,7 @@ using System.Text.Json;
 
 public class WebSocketManager
 {
-    private readonly ConcurrentDictionary<string, WebSocket> _sockets = new();
+    private readonly ConcurrentDictionary<string, ClientConnection> _connections = new();
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<WebSocketManager> _logger;
 
@@ -18,10 +18,13 @@ public class WebSocketManager
         _logger = logger;
     }
 
+public sealed record ClientConnection(WebSocket Socket, int DocumentId);
+
     public async Task HandleConnection(WebSocket webSocket, int documentId)
     {
         var socketId = Guid.NewGuid().ToString();
-        _sockets.TryAdd(socketId, webSocket);
+        var connection = new ClientConnection(webSocket, documentId);
+        _connections.TryAdd(socketId, connection);
 
         try
         {
@@ -43,11 +46,11 @@ public class WebSocketManager
                 dbContext.Documents.Add(document);
                 await dbContext.SaveChangesAsync();
 
-                await SendToClient(webSocket, "sync", documentId, "Document not found. A new document has been created.");
+                await SendToClient(webSocket, "sync", $"Document not found. A new document has been created.");
             }
             else
             {
-                await SendToClient(webSocket, "sync", documentId, document.Content);
+                await SendToClient(webSocket, "sync", document.Content);
             }
 
             while (webSocket.State == WebSocketState.Open)
@@ -57,7 +60,7 @@ public class WebSocketManager
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
                     var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    await HandleMessage(message, webSocket, dbContext);
+                    await HandleMessage(documentId, message, webSocket, dbContext);
                 }
                 else if (result.MessageType == WebSocketMessageType.Close)
                 {
@@ -67,7 +70,7 @@ public class WebSocketManager
         }
         finally
         {
-            _sockets.TryRemove(socketId, out _);
+            _connections.TryRemove(socketId, out _);
             if (webSocket.State == WebSocketState.Open)
             {
                 await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
@@ -76,7 +79,7 @@ public class WebSocketManager
         }
     }
 
-    private async Task HandleMessage(string message, WebSocket webSocket, AppDbContext dbContext)
+    private async Task HandleMessage(int documentId, string message, WebSocket webSocket, AppDbContext dbContext)
     {
         var msg = JsonSerializer.Deserialize<WebSocketMessage>(message);
         _logger.LogInformation("Received message: {Message}", message);
@@ -84,41 +87,44 @@ public class WebSocketManager
         {
             switch (msg.Type)
             {
-                case "sync":
-                    await HandleSyncMessage(msg.DocId, webSocket, dbContext);
-                    break;
                 case "update":
-                    await HandleUpdateMessage(msg.DocId, msg.Update.ToString(), dbContext);
+                    var updatePayload = ExtractUpdatePayload(msg.Update);
+                    if (string.IsNullOrWhiteSpace(updatePayload))
+                    {
+                        _logger.LogWarning("Received update message without a valid payload: {Message}", message);
+                        break;
+                    }
+
+                    await HandleUpdateMessage(documentId, updatePayload, dbContext);
                     break;
             }
         }
     }
 
-    private async Task HandleSyncMessage(int docId, WebSocket webSocket, AppDbContext dbContext)
+    private static string? ExtractUpdatePayload(object? update)
     {
-        var document = await dbContext.Documents.FirstOrDefaultAsync(d => d.Id == docId);
-        if (document == null)
+        if (update is null)
         {
-            // Jika dokumen belum ada, buat dokumen baru
-            document = new Document
-            {
-                Id = docId,
-                Content = "Initial content",
-                LastUpdated = DateTime.UtcNow
-            };
-            dbContext.Documents.Add(document);
-            await dbContext.SaveChangesAsync();
-            await SendToClient(webSocket, "sync", docId, $"Document with ID {docId} is created.");
+            return null;
         }
-        else
+
+        return update switch
         {
-            // Kirim konten awal ke klien
-            await SendToClient(webSocket, "sync", docId, document.Content);
-        }
+            string text => text,
+            JsonElement jsonElement when jsonElement.ValueKind == JsonValueKind.String => jsonElement.GetString(),
+            JsonElement jsonElement => jsonElement.GetRawText(),
+            _ => update.ToString()
+        };
     }
 
     private async Task HandleUpdateMessage(int docId, string update, AppDbContext dbContext)
     {
+        if (string.IsNullOrWhiteSpace(update))
+        {
+            _logger.LogWarning("Skipping update for DocId {DocId} because the payload was empty.", docId);
+            return;
+        }
+
         var document = await dbContext.Documents.FirstOrDefaultAsync(d => d.Id == docId);
         if (document != null)
         {
@@ -126,16 +132,15 @@ public class WebSocketManager
             document.Content = update;
             document.LastUpdated = DateTime.UtcNow;
             await dbContext.SaveChangesAsync();
-            await BroadcastToAll("update", docId, update);
+            await BroadcastToDocumentClients(docId, "update", update); // Broadcast only to the clients of this document
         }
     }
 
-    private async Task SendToClient(WebSocket webSocket, string type, int docId, object update)
+    private async Task SendToClient(WebSocket webSocket, string type, object update)
     {
         var message = new WebSocketMessage
         {
             Type = type,
-            DocId = docId,
             Update = update
         };
 
@@ -145,21 +150,21 @@ public class WebSocketManager
         await webSocket.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
     }
 
-    private async Task BroadcastToAll(string type, int docId, object update)
+    // Modify the Broadcast method to send only to clients subscribed to the same DocId
+    private async Task BroadcastToDocumentClients(int docId, string type, object update)
     {
-        _logger.LogInformation("Broadcast requested. Type: {Type}, DocId: {DocId}, Update: {Update}", type, docId, update);
+        _logger.LogInformation("Broadcasting to DocId {DocId}. Type: {Type}, Update: {Update}", docId, type, update);
         var message = new WebSocketMessage
         {
             Type = type,
-            DocId = docId,
             Update = update
         };
 
         var messageJson = JsonSerializer.Serialize(message);
         var buffer = Encoding.UTF8.GetBytes(messageJson);
 
-        var openSockets = _sockets
-            .Where(kvp => kvp.Value.State == WebSocketState.Open)
+        var openSockets = _connections
+            .Where(kvp => kvp.Value.DocumentId == docId && kvp.Value.Socket.State == WebSocketState.Open)
             .ToList();
 
         _logger.LogInformation("Broadcasting payload to {SocketCount} socket(s).", openSockets.Count);
@@ -168,7 +173,9 @@ public class WebSocketManager
         {
             try
             {
-                await kvp.Value.SendAsync(
+                // Check if the socket is subscribed to the same DocId
+                // (You can manage a mapping of socketId to docId if needed)
+                await kvp.Value.Socket.SendAsync(
                     new ArraySegment<byte>(buffer),
                     WebSocketMessageType.Text,
                     true,
@@ -194,6 +201,5 @@ public class WebSocketManager
 public class WebSocketMessage
 {
     public string Type { get; set; } = string.Empty;
-    public int DocId { get; set; }
     public object Update { get; set; } = string.Empty;
 }
