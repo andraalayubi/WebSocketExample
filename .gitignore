@@ -1,0 +1,49 @@
+# Build outputs
+bin/
+obj/
+
+# Visual Studio artifacts
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+
+# Logs
+*.log
+
+# NuGet packages
+packages/
+*.nupkg
+# Paket dependency manager
+.paket/
+paket-files/
+
+# DotCover
+*.dotCover
+
+# Azure
+*.PublishSettings
+
+# Resharper
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# User secrets
+secrets.json
+
+# IIS
+*.vspscc
+*.vsp
+
+# Others
+[Dd]ebug/
+[Rr]elease/
+[Tt]est[Rr]esult*
+[Ll]og/
+node_modules/
