@@ -18,7 +18,7 @@ public class WebSocketManager
         _logger = logger;
     }
 
-public sealed record ClientConnection(WebSocket Socket, int DocumentId);
+    public sealed record ClientConnection(WebSocket Socket, int DocumentId);
 
     public async Task HandleConnection(WebSocket webSocket, int documentId)
     {

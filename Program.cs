@@ -6,16 +6,30 @@ using System.IO;
 var builder = WebApplication.CreateBuilder(args);
 
 var logFilePath = Path.Combine(builder.Environment.ContentRootPath, "Logs", "app.log");
+Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "Logs"));
 builder.Logging.AddFile(logFilePath);
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
 );
 
+// Configure CORS for ngrok
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll", policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
+});
+
 // Register WebSocketManager
 builder.Services.AddSingleton<WebSocketManager>();
 
 var app = builder.Build();
+
+app.UseCors("AllowAll");
 
 app.UseWebSockets();
 
