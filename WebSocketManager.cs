@@ -82,22 +82,40 @@ public class WebSocketManager
     private async Task HandleMessage(int documentId, string message, WebSocket webSocket, AppDbContext dbContext)
     {
         var msg = JsonSerializer.Deserialize<WebSocketMessage>(message);
-        _logger.LogInformation("Received message: {Message}", message);
-        if (msg != null)
-        {
-            switch (msg.Type)
-            {
-                case "update":
-                    var updatePayload = ExtractUpdatePayload(msg.Update);
-                    if (string.IsNullOrWhiteSpace(updatePayload))
-                    {
-                        _logger.LogWarning("Received update message without a valid payload: {Message}", message);
-                        break;
-                    }
 
-                    await HandleUpdateMessage(documentId, updatePayload, dbContext);
+        if (msg == null)
+        {
+            _logger.LogInformation("Received message: {Message}", message);
+            return;
+        }
+
+        switch (msg.Type)
+        {
+            case "update":
+                var updatePayload = ExtractUpdatePayload(msg.Update);
+                var decodedPayload = TryDecodeBase64String(updatePayload);
+
+                if (decodedPayload != null)
+                {
+                    updatePayload = decodedPayload;
+                }
+                else if (!string.IsNullOrWhiteSpace(updatePayload))
+                {
+                    _logger.LogWarning("Failed to decode update payload from Base64. Raw payload: {RawPayload}", updatePayload);
+                }
+
+                if (string.IsNullOrWhiteSpace(updatePayload))
+                {
+                    _logger.LogWarning("Received update message without a valid payload. Original message: {Message}", message);
                     break;
-            }
+                }
+
+                _logger.LogInformation("Received update message. Decoded payload: {DecodedPayload}", updatePayload);
+                await HandleUpdateMessage(documentId, updatePayload, dbContext);
+                break;
+            default:
+                _logger.LogInformation("Received message: {Message}", message);
+                break;
         }
     }
 
@@ -115,6 +133,24 @@ public class WebSocketManager
             JsonElement jsonElement => jsonElement.GetRawText(),
             _ => update.ToString()
         };
+    }
+
+    private static string? TryDecodeBase64String(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        try
+        {
+            var buffer = Convert.FromBase64String(value);
+            return Encoding.UTF8.GetString(buffer);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
     }
 
     private async Task HandleUpdateMessage(int docId, string update, AppDbContext dbContext)
