@@ -24,35 +24,15 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Register WebSocketManager
-builder.Services.AddSingleton<WebSocketManager>();
+builder.Services.AddSignalR();
+
+builder.Services.AddScoped<DocumentHub>();
 
 var app = builder.Build();
 
 app.UseCors("AllowAll");
 
-app.UseWebSockets();
 
-app.Map("/ws/{documentId}", async context =>
-{
-    if (context.WebSockets.IsWebSocketRequest)
-    {
-        var documentIdValue = context.Request.RouteValues["documentId"]?.ToString();
-        if (!int.TryParse(documentIdValue, out var documentId))
-        {
-            context.Response.StatusCode = StatusCodes.Status400BadRequest;
-            await context.Response.WriteAsync("Valid numeric document ID is required.");
-            return;
-        }
-
-        var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-        var wsManager = context.RequestServices.GetRequiredService<WebSocketManager>();
-        await wsManager.HandleConnection(webSocket, documentId);
-    }
-    else
-    {
-        context.Response.StatusCode = StatusCodes.Status400BadRequest;
-    }
-});
+app.MapHub<DocumentHub>("/ws/document");
 
 app.Run();
