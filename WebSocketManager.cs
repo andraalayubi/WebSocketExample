@@ -46,11 +46,11 @@ public class WebSocketManager
                 dbContext.Documents.Add(document);
                 await dbContext.SaveChangesAsync();
 
-                await SendToClient(webSocket, "sync", $"Document not found. A new document has been created.");
+                await SendToClient(webSocket, "sync", documentId, "Document not found. A new document has been created.");
             }
             else
             {
-                await SendToClient(webSocket, "sync", document.Content);
+                await SendToClient(webSocket, "sync", documentId, document.Content);
             }
 
             while (webSocket.State == WebSocketState.Open)
@@ -172,13 +172,9 @@ public class WebSocketManager
         }
     }
 
-    private async Task SendToClient(WebSocket webSocket, string type, object update)
+    private async Task SendToClient(WebSocket webSocket, string type, int docId, object update)
     {
-        var message = new WebSocketMessage
-        {
-            Type = type,
-            Update = update
-        };
+        var message = new WebSocketMessage(type, docId, update);
 
         var messageJson = JsonSerializer.Serialize(message);
         var buffer = Encoding.UTF8.GetBytes(messageJson);
@@ -190,11 +186,7 @@ public class WebSocketManager
     private async Task BroadcastToDocumentClients(int docId, string type, object update)
     {
         _logger.LogInformation("Broadcasting to DocId {DocId}. Type: {Type}, Update: {Update}", docId, type, update);
-        var message = new WebSocketMessage
-        {
-            Type = type,
-            Update = update
-        };
+        var message = new WebSocketMessage(type, docId, update);
 
         var messageJson = JsonSerializer.Serialize(message);
         var buffer = Encoding.UTF8.GetBytes(messageJson);
@@ -234,8 +226,4 @@ public class WebSocketManager
     }
 }
 
-public class WebSocketMessage
-{
-    public string Type { get; set; } = string.Empty;
-    public object Update { get; set; } = string.Empty;
-}
+public sealed record WebSocketMessage(string Type, int DocId, object Update);
