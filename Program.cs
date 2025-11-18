@@ -10,8 +10,10 @@ Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "Log
 builder.Logging.AddFile(logFilePath);
 
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
-);
+{
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"));
+    options.EnableSensitiveDataLogging();
+});
 
 // Configure CORS for ngrok
 builder.Services.AddCors(options =>
