@@ -74,7 +74,7 @@ public class DocumentHub : Hub
     {
         try
         {
-            _logger.LogInformation("Raw message received from {ConnectionId}: {Message}", Context.ConnectionId, message);
+            _logger.LogInformation("Raw message received from {ConnectionId}: {Message}", Context.ConnectionId, message);   
 
             var msg = JsonSerializer.Deserialize<SignalRMessage>(message);
 
@@ -113,16 +113,30 @@ public class DocumentHub : Hub
 
         try
         {
-            var updateBytes = ExtractUpdateBytes(msg.update);
+            var updatePayload = ExtractUpdatePayload(msg.update);
 
-            if (updateBytes is null || updateBytes.Length == 0)
+            if (string.IsNullOrWhiteSpace(updatePayload))
             {
-                _logger.LogWarning("Received empty or invalid update payload from {ConnectionId}", Context.ConnectionId);
+                _logger.LogWarning("Received empty update payload");
                 return;
             }
 
-            _logger.LogInformation("Raw Y.js update bytes: {Bytes}", Convert.ToBase64String(updateBytes));
-            _logger.LogInformation("Update length: {Length}", Encoding.UTF8.GetString(updateBytes));
+            var decodedPayload = TryDecodeBase64String(updatePayload);
+
+            _logger.LogInformation("Raw Y.js update bytes: {Bytes}", updatePayload);
+            _logger.LogInformation("Raw Y.js update bytes: {Bytes}", decodedPayload);
+
+            string finalPayload;
+            if (decodedPayload != null)
+            {
+                _logger.LogInformation("Successfully decoded Base64. Decoded: {Decoded}", decodedPayload);
+                finalPayload = decodedPayload;
+            }
+            else
+            {
+                _logger.LogInformation("Using raw payload (not Base64)");
+                finalPayload = updatePayload;
+            }
 
             // Update database - SIMPAN binary update, jangan convert ke base64
             await using var scope = _serviceProvider.CreateAsyncScope();
@@ -131,8 +145,8 @@ public class DocumentHub : Hub
             var document = await dbContext.Documents.FirstOrDefaultAsync(d => d.Id == documentId);
             if (document != null)
             {
-                document.Content = Convert.ToBase64String(updateBytes);
-                document.YjsState = updateBytes;
+                document.Content = finalPayload;
+                document.YjsState = [];
                 document.LastUpdated = DateTime.UtcNow;
 
                 await dbContext.SaveChangesAsync();
@@ -140,7 +154,7 @@ public class DocumentHub : Hub
                 _logger.LogInformation("Database updated for document {DocumentId} by {ConnectionId}", documentId, Context.ConnectionId);
 
                 // Broadcast binary update asli ke clients lain
-                await BroadcastToDocumentClients(documentId, "update", updateBytes);
+                await BroadcastToDocumentClients(documentId, "update", finalPayload);
             }
             else
             {
@@ -159,7 +173,7 @@ public class DocumentHub : Hub
         {
             _logger.LogInformation("Broadcasting to DocId {DocId}. Type: {Type}", docId, type);
 
-            var message = new SignalRMessage(type, docId.ToString(), update);
+            var message = new SignalRMessage(type, docId.ToString(), update.ToString());
 
             var connectionIds = _connectionDocumentMap
                 .Where(kvp => kvp.Value == docId.ToString())
@@ -179,7 +193,7 @@ public class DocumentHub : Hub
         }
     }
 
-    private static byte[]? ExtractUpdateBytes(object? update)
+    private static string? ExtractUpdatePayload(object? update)
     {
         if (update is null)
         {
@@ -188,78 +202,63 @@ public class DocumentHub : Hub
 
         try
         {
-            // Handle JSON array dari frontend Y.js
-            if (update is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Array)
+            return update switch
             {
-                return DecodeNumericArray(jsonElement);
-            }
-
-            // Handle jika sudah berupa List<int> atau array
-            if (update is IEnumerable<int> intEnumerable)
-            {
-                return intEnumerable.Select(value =>
-                {
-                    if (value < 0 || value > 255)
-                    {
-                        throw new ArgumentOutOfRangeException($"Value {value} is out of byte range");
-                    }
-                    return (byte)value;
-                }).ToArray();
-            }
-
-            // Handle string (fallback - seharusnya tidak terjadi dengan Y.js)
-            if (update is string stringValue)
-            {
-                // Coba parse sebagai JSON array dulu
-                try
-                {
-                    var element = JsonSerializer.Deserialize<JsonElement>(stringValue);
-                    if (element.ValueKind == JsonValueKind.Array)
-                    {
-                        return DecodeNumericArray(element);
-                    }
-                }
-                catch
-                {
-                    // Jika bukan JSON, coba sebagai base64
-                    return Convert.FromBase64String(stringValue);
-                }
-            }
-
-            return null;
+                string text => text,
+                JsonElement jsonElement when jsonElement.ValueKind == JsonValueKind.String => 
+                    jsonElement.GetString(),
+                JsonElement jsonElement => jsonElement.GetRawText(),
+                _ => update.ToString()
+            };
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            Console.WriteLine($"Error extracting update bytes: {ex.Message}");
-            return null;
+            return update.ToString();
         }
     }
 
-    private static byte[] DecodeNumericArray(JsonElement arrayElement)
+    private static string? TryDecodeBase64String(string? value)
     {
-        var buffer = new List<byte>();
-
-        foreach (var element in arrayElement.EnumerateArray())
+        if (string.IsNullOrWhiteSpace(value))
         {
-            if (element.ValueKind == JsonValueKind.Number && element.TryGetInt32(out var intValue))
-            {
-                if (intValue >= 0 && intValue <= 255)
-                {
-                    buffer.Add((byte)intValue);
-                }
-                else
-                {
-                    throw new ArgumentOutOfRangeException($"Array value {intValue} is out of byte range");
-                }
-            }
-            else
-            {
-                throw new InvalidOperationException("Array contains non-numeric elements");
-            }
+            return null;
         }
 
-        return buffer.ToArray();
+        try
+        {
+            // Validasi panjang Base64 (harus kelipatan 4)
+            if (value.Length % 4 != 0)
+            {
+                return null;
+            }
+
+            // Validasi karakter Base64
+            if (!System.Text.RegularExpressions.Regex.IsMatch(value, @"^[a-zA-Z0-9\+/]*={0,3}$"))
+            {
+                return null;
+            }
+
+            var buffer = Convert.FromBase64String(value);
+            var utf8Strict = new UTF8Encoding(false, true);
+            var decoded = utf8Strict.GetString(buffer);
+
+            // Cek apakah hasil decode mengandung null character
+            if (decoded.IndexOf('\0') >= 0)
+            {
+                return null;
+            }
+
+            return decoded;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
     }
 }
 
-public sealed record SignalRMessage(string type, string docId, object? update);
+public sealed record SignalRMessage(string type, string docId, string? update);
