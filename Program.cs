@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using WebSocketExample;
 using WebSocketExample.Logging;
 using WebSocketExample.Models;
 using System.IO;
@@ -10,29 +11,32 @@ Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "Log
 builder.Logging.AddFile(logFilePath);
 
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
-);
+{
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"));
+    options.EnableSensitiveDataLogging();
+});
 
 // Configure CORS for ngrok
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", policy =>
     {
-        policy.AllowAnyOrigin()
+        policy.WithOrigins(
+                  "http://localhost:3000",
+                  "https://localhost:3000")
               .AllowAnyMethod()
-              .AllowAnyHeader();
+              .AllowAnyHeader()
+              .AllowCredentials();
     });
 });
 
+// Add SignalR
 builder.Services.AddSignalR();
-
-builder.Services.AddScoped<DocumentHub>();
 
 var app = builder.Build();
 
 app.UseCors("AllowAll");
 
-
-app.MapHub<DocumentHub>("/ws/document");
+app.MapHub<DocumentHub>("/documentHub");
 
 app.Run();
